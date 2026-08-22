@@ -1,0 +1,94 @@
+name: Publish v11 first-run
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-v11.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build static v11 from frozen v10 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .v11-build
+          mkdir -p .v11-build
+          unzip -q takken-quest-asset-ui-v10-runner.zip -d .v11-build
+          APP_DIR='.v11-build/takken-quest-asset-ui-v10-runner'
+          test -f "$APP_DIR/index.html"
+          test -d "$APP_DIR/assets"
+
+          python3 - "$APP_DIR/index.html" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path(sys.argv[1])
+          s = p.read_text(encoding='utf-8')
+
+          s = s.replace("const V8_LABEL='v8 / PROOF LOOP'", "const V8_LABEL='宅建QUEST'")
+          s = s.replace("const V10_LABEL='v10 RUNNER & PICKUP';", "const V10_LABEL='宅建QUEST';")
+          s = s.replace("document.title='宅建QUEST v10 RUNNER & PICKUP';", "document.title='宅建QUEST';")
+          s = s.replace("S.v9.version=10;save();", "S.v9.version=11;save();")
+
+          old_boot = "function bootV6(){migrateV6();if(!S.settings.onboardingDone)onboarding(1);else home()}"
+          new_boot = "function bootV6(){migrateV6();if(!S.settings.v11FirstRunSeen)onboarding(1);else home()}"
+          if old_boot not in s:
+              raise SystemExit('v11 boot patch target not found')
+          s = s.replace(old_boot, new_boot, 1)
+
+          pattern = re.compile(
+              r"/\* New-user onboarding ends in proof, not a price screen\. \*/.*?/\* home: first value moment dominates; no price banner before proof\. \*/",
+              re.S,
+          )
+
+          replacement = r'''/* v11: first-use experience = one promise, then immediate 5-question RUN. */
+          onboarding=function(){render(`<div class="v6-onb v8-onb"><div class="v6-onb-card"><div class="v6-onb-hero sprite hero-victory"></div><small>宅建QUEST</small><h1>遊んでいたら、<br>いつの間にか宅建に強くなる。</h1><p>まずは5問だけ。<b>勇者を左右に動かして、正しい○×ゲートへ走れ。</b><br>弱点分析と復習は、遊んだ記録からあとで自動で組み立てる。</p><button onclick="G.finishOnboarding()">⚔ 冒険を始める</button><button class="v6-skip" onclick="G.finishOnboarding(true)">先にホームを見る</button></div></div>`)};
+          finishOnboarding=function(homeOnly=false){S.settings.onboardingDone=true;S.settings.v11FirstRunSeen=true;save();if(homeOnly)home();else _v9ExecuteRun()};
+          /* home: first value moment dominates; no price banner before proof. */'''
+
+          s, n = pattern.subn(replacement, s, count=1)
+          if n != 1:
+              raise SystemExit(f'v11 onboarding patch failed: expected 1 block, got {n}')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+          cp "$APP_DIR/index.html" index.html
+          rm -rf assets
+          cp -R "$APP_DIR/assets" assets
+          rm -rf .v11-build
+
+          grep -q '遊んでいたら' index.html
+          grep -q 'v11FirstRunSeen' index.html
+          grep -q 'finishOnboarding=function(homeOnly=false)' index.html
+          ! grep -q "fetch('./takken-quest-asset-ui-v10-runner.zip" index.html
+          test -f assets/run_forest.png
+          test -f assets/hero_run_sheet_12.png
+
+      - name: Commit static v11
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html assets
+
+          if git diff --cached --quiet; then
+            echo 'No changes to publish.'
+            exit 0
+          fi
+
+          git commit -m 'Publish v11 first-run static build'
+          git push origin HEAD:main
